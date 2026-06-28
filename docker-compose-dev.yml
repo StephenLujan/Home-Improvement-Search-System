@@ -1,0 +1,101 @@
+services:
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+  hiss:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hiss-local
+    container_name: hiss
+    restart: unless-stopped
+    ports:
+      - "8888:80"
+    secrets:
+      - meili_auth_header
+    networks:
+      - internal
+
+  # ── Search index ─────────────────────────────────────────────────────────────
+  hiss-meilisearch:
+    image: getmeili/meilisearch:v1.13
+    container_name: hiss-meilisearch
+    restart: unless-stopped
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_ENV: production
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY}"
+      MEILI_MAX_INDEXING_MEMORY: 128Mb
+    volumes:
+      - meilisearch_data:/meili_data
+    networks:
+      - internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7700/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Data pipeline (long-lived, internal APScheduler) ─────────────────────────
+  hiss-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: hiss-pipeline-local
+    container_name: hiss-pipeline
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      SERPER_API_KEY: "${SERPER_API_KEY}"
+      EVENTBRITE_API_KEY: "${EVENTBRITE_API_KEY}"
+      MEILI_URL: "http://hiss-meilisearch:7700"
+      MEILI_MASTER_KEY: "${MEILI_MASTER_KEY}"
+      DB_PATH: "/data/hiss.db"
+      PIPELINE_SCHEDULE: "${PIPELINE_SCHEDULE:-0 3 * * 0}"
+      SKIP_STARTUP_RUN: "${SKIP_STARTUP_RUN:-false}"
+    volumes:
+      - pipeline_data:/data
+      - ./data:/app/data           # Census lookup files + festivalnet/ ingest directory
+      - ./data/festivalnet:/app/data/festivalnet
+    networks:
+      - internal
+    depends_on:
+      hiss-meilisearch:
+        condition: service_healthy
+
+  # ── Admin / debug UI (read-only SQLite browser) ───────────────────────────────
+  hiss-datasette:
+    image: datasetteproject/datasette:latest
+    container_name: hiss-datasette
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    command: >
+      sh -c "mkdir -p /data && touch /data/hiss.db && datasette -i /data/hiss.db --host 0.0.0.0 --port 8001 --setting sql_time_limit_ms 5000 --setting max_returned_rows 500"
+    volumes:
+      - pipeline_data:/data
+    networks:
+      - internal
+
+secrets:
+  # File must contain exactly one nginx directive:
+  #   proxy_set_header Authorization "Bearer <key-value>";
+  # nginx includes it natively — no scripts, no env vars.
+  meili_auth_header:
+    file: ${MEILI_SECRET_FILE:-./secrets/meili_auth_header}
+
+volumes:
+  meilisearch_data:
+  pipeline_data:
+
+networks:
+  internal:
+    driver: bridge
