@@ -168,7 +168,8 @@ def fetch_all(
                         )
                         time.sleep(wait)
                         continue
-                    logger.error("Serper HTTP %d on query '%s'", status, query)
+                    response_text = exc.response.text if exc.response is not None else "<no response>"
+                    logger.error("Serper HTTP %d on query '%s': %s", status, query, response_text)
                     raw_events = []
                     break
                 except requests.RequestException as exc:
